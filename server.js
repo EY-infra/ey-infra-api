@@ -4,7 +4,8 @@ const { Client } = require('@microsoft/microsoft-graph-client');
 const { TokenCredentialAuthenticationProvider } = require('@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({limit:'25mb'}));
+app.use(express.urlencoded({extended:true, limit:'25mb'}));
 
 // CORS
 app.use((req, res, next) => {
@@ -205,6 +206,143 @@ app.post('/projecten', async (req, res) => {
     res.json({ success: true, projecten });
   } catch(e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+
+
+// ── DOCUMENT UPLOAD NAAR SUPABASE STORAGE ──
+app.post('/upload-document', async (req, res) => {
+  const { userId, bestandsnaam, base64, mimeType, categorie } = req.body;
+  if (!userId || !base64 || !bestandsnaam) {
+    return res.status(400).json({ error: 'userId, base64 en bestandsnaam zijn verplicht' });
+  }
+
+  try {
+    // Converteer base64 naar buffer
+    const buffer = Buffer.from(base64, 'base64');
+    
+    // Supabase Storage upload via REST API
+    const pad = `${userId}/${Date.now()}-${bestandsnaam}`;
+    const uploadUrl = `${SUPABASE_URL}/storage/v1/object/documenten/${pad}`;
+    
+    const uploadResp = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': mimeType || 'application/octet-stream',
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'x-upsert': 'true'
+      },
+      body: buffer
+    });
+
+    if (!uploadResp.ok) {
+      const err = await uploadResp.text();
+      // Als bucket niet bestaat, probeer aan te maken
+      if (err.includes('Bucket not found') || err.includes('bucket')) {
+        // Maak bucket aan
+        await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_KEY,
+            'Authorization': `Bearer ${SUPABASE_KEY}`
+          },
+          body: JSON.stringify({ id: 'documenten', name: 'documenten', public: true })
+        });
+        // Probeer opnieuw
+        const retry = await fetch(uploadUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': mimeType || 'application/octet-stream',
+            'apikey': SUPABASE_KEY,
+            'Authorization': `Bearer ${SUPABASE_KEY}`,
+            'x-upsert': 'true'
+          },
+          body: buffer
+        });
+        if (!retry.ok) throw new Error(await retry.text());
+      } else {
+        throw new Error(err);
+      }
+    }
+
+    // Publieke URL opbouwen
+    const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/documenten/${pad}`;
+    
+    res.json({ success: true, url: publicUrl, pad });
+  } catch(err) {
+    console.error('Upload fout:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DOCUMENT VERWIJDEREN UIT SUPABASE STORAGE ──
+app.delete('/delete-document', async (req, res) => {
+  const { pad } = req.body;
+  if (!pad) return res.status(400).json({ error: 'pad verplicht' });
+  try {
+    await fetch(`${SUPABASE_URL}/storage/v1/object/documenten/${pad}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+    });
+    res.json({ success: true });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── AI BUGFIX ENDPOINT ──
+app.post('/ai-fix', async (req, res) => {
+  const { fouten, context } = req.body;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+
+  if(!apiKey){
+    return res.status(503).json({ error: 'ANTHROPIC_API_KEY niet ingesteld op de server.' });
+  }
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: `Je bent een expert JavaScript-ontwikkelaar die bugs analyseert in een HR-app (EY Infra Support).
+Analyseer de fout(en) en geef:
+1. Uitleg in gewoon Nederlands wat er mis is (max 3 zinnen)
+2. Een concrete oplossing
+3. Als mogelijk: de gecorrigeerde JavaScript-functie tussen <fix> tags
+
+Wees duidelijk en praktisch.`,
+        messages: [{
+          role: 'user',
+          content: `Fouten:
+${fouten}
+
+Context:
+${context || 'Geen extra context'}`
+        }]
+      })
+    });
+
+    if(!resp.ok){
+      const err = await resp.text();
+      throw new Error(`Anthropic API fout: ${err}`);
+    }
+
+    const data = await resp.json();
+    const tekst = data.content?.[0]?.text || 'Geen diagnose beschikbaar.';
+    res.json({ success: true, diagnose: tekst });
+
+  } catch(err) {
+    console.error('AI fix fout:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
