@@ -357,16 +357,22 @@ app.post('/send-mail', async (req, res) => {
       scopes: ['https://graph.microsoft.com/.default']
     });
     const client = Client.initWithMiddleware({ authProvider });
+
+    // Ondersteuning voor meerdere ontvangers (kommagescheiden of array)
+    const ontvangers = Array.isArray(aan)
+      ? aan
+      : aan.split(',').map(a => a.trim()).filter(Boolean);
+
     await client.api(`/users/${AFZENDER}/sendMail`).post({
       message: {
         subject: onderwerp,
         body: { contentType: htmlTekst ? 'HTML' : 'Text', content: htmlTekst || tekst },
-        toRecipients: [{ emailAddress: { address: aan } }],
+        toRecipients: ontvangers.map(adres => ({ emailAddress: { address: adres } })),
         from: { emailAddress: { name: 'HR Portaal — EY Infra Support', address: AFZENDER } }
       },
       saveToSentItems: true
     });
-    console.log(`✅ Mail verstuurd naar ${aan}: ${onderwerp}`);
+    console.log(`✅ Mail verstuurd naar ${ontvangers.join(', ')}: ${onderwerp}`);
     res.json({ success: true });
   } catch (err) {
     console.error('❌ Mail fout:', err.message);
