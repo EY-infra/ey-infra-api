@@ -358,10 +358,19 @@ app.post('/send-mail', async (req, res) => {
     });
     const client = Client.initWithMiddleware({ authProvider });
 
-    // Ondersteuning voor meerdere ontvangers (kommagescheiden of array)
-    const ontvangers = Array.isArray(aan)
+    // Verzamel ontvangers: array, kommagescheiden string, of enkel adres
+    let ontvangers = Array.isArray(aan)
       ? aan
-      : aan.split(',').map(a => a.trim()).filter(Boolean);
+      : String(aan).split(',').map(a => a.trim()).filter(Boolean);
+
+    // Voeg planning@ ALTIJD toe (tenzij het al een privé-antwoord aan een ZZP'er is)
+    const intern = ontvangers.some(a => a.includes('administratie@') || a.includes('info@'));
+    if (intern && !ontvangers.includes('planning@eyinfrasupport.nl')) {
+      ontvangers.push('planning@eyinfrasupport.nl');
+    }
+
+    // Verwijder dubbele en ongeldige adressen
+    ontvangers = [...new Set(ontvangers)].filter(a => a.includes('@'));
 
     await client.api(`/users/${AFZENDER}/sendMail`).post({
       message: {
@@ -373,7 +382,7 @@ app.post('/send-mail', async (req, res) => {
       saveToSentItems: true
     });
     console.log(`✅ Mail verstuurd naar ${ontvangers.join(', ')}: ${onderwerp}`);
-    res.json({ success: true });
+    res.json({ success: true, ontvangers });
   } catch (err) {
     console.error('❌ Mail fout:', err.message);
     res.status(500).json({ error: err.message });
